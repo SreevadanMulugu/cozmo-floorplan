@@ -60,17 +60,24 @@ def extract_geometry(room_cloud: RoomCloud) -> RoomGeometry:
     # Ceiling height
     geo.ceiling_height_m = _compute_ceiling_height(room_cloud)
 
-    # Walls → 2D line segments
-    for i, wall_plane in enumerate(room_cloud.walls):
-        seg = _wall_plane_to_segment(wall_plane, room_cloud, wall_id=f"w{i+1}")
-        if seg and seg.length_m >= MIN_WALL_LENGTH:
-            geo.walls.append(seg)
-
-    # Floor polygon and area from point cloud top-down projection
+    # Floor polygon and area — computed first because walls derive from it
     geo.floor_polygon_2d, geo.floor_area_m2 = _compute_floor_polygon(room_cloud)
 
     if geo.floor_polygon_2d is not None and len(geo.floor_polygon_2d) > 0:
         geo.room_center_2d = geo.floor_polygon_2d.mean(axis=0)
+
+    # Walls: derive from floor polygon edges (fully deterministic — same convex hull
+    # vertices every run) rather than from RANSAC inlier extents (stochastic).
+    # Simplify the polygon first to remove sub-cm quantization jog edges.
+    if geo.floor_polygon_2d is not None and len(geo.floor_polygon_2d) >= 3:
+        simplified = _simplify_floor_polygon(geo.floor_polygon_2d)
+        geo.walls = _walls_from_floor_polygon(simplified, room_cloud)
+    else:
+        # Fallback for degenerate floor polygon
+        for i, wall_plane in enumerate(room_cloud.walls):
+            seg = _wall_plane_to_segment(wall_plane, room_cloud, wall_id=f"w{i+1}")
+            if seg and seg.length_m >= MIN_WALL_LENGTH:
+                geo.walls.append(seg)
 
     # Opening detection per wall
     for wall_seg in geo.walls:
@@ -103,15 +110,98 @@ def _compute_ceiling_height(room_cloud: RoomCloud) -> float:
     return 2.4
 
 
+def _simplify_floor_polygon(polygon_xz: np.ndarray, tolerance_m: float = 0.08) -> np.ndarray:
+    """
+    Simplify convex-hull polygon using Ramer-Douglas-Peucker (via shapely).
+    Removes quantization jog edges shorter than ~tolerance_m so that tiny
+    corner artifacts don't become walls with stochastic lengths.
+    """
+    try:
+        from shapely.geometry import Polygon
+        poly = Polygon(polygon_xz)
+        simplified = poly.simplify(tolerance_m, preserve_topology=True)
+        if simplified.is_valid and not simplified.is_empty:
+            coords = np.array(simplified.exterior.coords)[:-1]  # drop repeated last point
+            if len(coords) >= 3:
+                return coords
+    except Exception:
+        pass
+    return polygon_xz
+
+
+def _walls_from_floor_polygon(
+    floor_polygon_xz: np.ndarray,
+    room_cloud: RoomCloud,
+) -> list[WallSegment]:
+    """
+    Derive wall segments from consecutive edges of the floor convex-hull polygon.
+    Fully deterministic: same point cloud → same hull vertices → same edges.
+    Wall height estimated from 3D points near each edge.
+    """
+    pts3d = np.asarray(room_cloud.pcd.points)
+    center_xz = floor_polygon_xz.mean(axis=0)
+    walls: list[WallSegment] = []
+    n = len(floor_polygon_xz)
+
+    for i in range(n):
+        p1 = floor_polygon_xz[i]
+        p2 = floor_polygon_xz[(i + 1) % n]
+        length = float(np.linalg.norm(p2 - p1))
+        if length < MIN_WALL_LENGTH:
+            continue
+
+        axis = (p2 - p1) / length
+        perp = np.array([-axis[1], axis[0]])
+        xz = pts3d[:, [0, 2]]
+        along = (xz - p1) @ axis
+        across = np.abs((xz - p1) @ perp)
+        near_mask = (along >= -0.1) & (along <= length + 0.1) & (across <= 0.25)
+        near = pts3d[near_mask]
+        if len(near) > 5:
+            height = float(np.clip(near[:, 1].max() - near[:, 1].min(), 0.5, 5.0))
+        elif room_cloud.floor and room_cloud.ceiling:
+            fa = int(np.argmax(np.abs(room_cloud.floor.normal)))
+            height = abs(room_cloud.ceiling.center[fa] - room_cloud.floor.center[fa])
+        else:
+            height = room_cloud.ceiling_height_m if hasattr(room_cloud, "ceiling_height_m") else 2.4  # type: ignore[attr-defined]
+
+        mid = (p1 + p2) / 2
+        normal_2d = perp.copy()
+        if float(np.dot(normal_2d, center_xz - mid)) < 0:
+            normal_2d = -normal_2d
+
+        walls.append(WallSegment(
+            p1=p1.copy(), p2=p2.copy(),
+            length_m=length,
+            height_m=float(height),
+            wall_id=f"w{i + 1}",
+            normal_2d=normal_2d,
+        ))
+
+    return walls
+
+
 def _wall_plane_to_segment(
     plane: PlaneSegment,
     room_cloud: RoomCloud,
     wall_id: str
 ) -> WallSegment | None:
-    """Project wall inlier points to 2D (XZ) and fit a line segment."""
-    pts = np.asarray(plane.inlier_cloud.points)
-    if len(pts) < 20:
+    """Project wall inlier points to 2D (XZ) and fit a line segment.
+
+    Uses all full-cloud points within 4cm of the wall plane for extent computation
+    (not only RANSAC inliers) so the length is stable across runs with different
+    RANSAC sub-segments on the same physical wall.
+    """
+    all_pts = np.asarray(room_cloud.pcd.points)
+    n = plane.normal
+    d = plane.d
+    dist = np.abs(all_pts @ n + d)
+    near_pts = all_pts[dist <= 0.04]   # 4cm = 2× RANSAC_DIST
+    if len(near_pts) < 20:
+        near_pts = np.asarray(plane.inlier_cloud.points)   # fallback to inliers
+    if len(near_pts) < 20:
         return None
+    pts = near_pts
 
     # Project to top-down (X, Z) — ignore Y
     xz = pts[:, [0, 2]]

@@ -4,6 +4,7 @@ Input parser: detects tier and normalizes inputs to a common intermediate format
 Supported inputs:
   LiDAR  → .ply file (from 3D Scanner App or ARKit app)
            OR directory with depth_*.tiff + rgb_*.png + poses.txt
+           OR ARKit RGBD directory (odometry.csv + depth/*.png + rgb.mp4)
   Video  → .mp4 / .mov file
            OR directory with frames/ + poses.txt (from COLMAP)
   Photo  → directory with *.jpg / *.png (one folder per room, or single folder)
@@ -28,6 +29,9 @@ class ParsedInput:
     depth_frames: list[Path] = field(default_factory=list)   # 32F TIFF per frame
     color_frames: list[Path] = field(default_factory=list)   # paired RGB
     pose_file: Path | None = None                            # camera poses (N×4×4 txt)
+    # ARKit RGBD format (odometry.csv + depth/*.png + confidence/*.png + rgb.mp4)
+    odometry_file: Path | None = None
+    confidence_frames: list[Path] = field(default_factory=list)
     # Video
     video_file: Path | None = None
     extracted_frames_dir: Path | None = None
@@ -48,6 +52,11 @@ def detect_tier(input_path: str) -> Tier:
         if ext in (".jpg", ".jpeg", ".png"):
             return "photo"
     if p.is_dir():
+        # Recurse one level to find ARKit RGBD sessions (sub-dirs with odometry.csv)
+        for candidate in [p] + [d for d in p.iterdir() if d.is_dir()]:
+            if (candidate / "odometry.csv").exists() and (candidate / "depth").is_dir():
+                return "lidar"
+
         files = list(p.rglob("*"))
         exts = {f.suffix.lower() for f in files}
         if ".ply" in exts:
@@ -60,7 +69,6 @@ def detect_tier(input_path: str) -> Tier:
         if has_video:
             return "video"
         if has_images:
-            # If subdirectories exist, treat as per-room photo folders
             return "photo"
     raise ValueError(f"Cannot detect tier for: {input_path}")
 
@@ -87,12 +95,36 @@ def _parse_lidar(p: Path, result: ParsedInput) -> None:
         result.ply_files = [p]
         return
 
+    # Check for ARKit RGBD session format: odometry.csv + depth/*.png + rgb.mp4
+    # May be in p itself or in a single sub-directory
+    arkit_candidates = [p]
+    if p.is_dir():
+        arkit_candidates += [d for d in p.iterdir() if d.is_dir()]
+    for candidate in arkit_candidates:
+        if (candidate / "odometry.csv").exists() and (candidate / "depth").is_dir():
+            result.odometry_file = candidate / "odometry.csv"
+            result.depth_frames = sorted((candidate / "depth").glob("*.png"))
+            conf_dir = candidate / "confidence"
+            if conf_dir.is_dir():
+                result.confidence_frames = sorted(conf_dir.glob("*.png"))
+            # Video for RGB frames
+            for vname in ("rgb.mp4", "video.mp4", "rgb.mov"):
+                vpath = candidate / vname
+                if vpath.exists():
+                    result.video_file = vpath
+                    break
+            # Global camera matrix as fallback intrinsics
+            cam_csv = candidate / "camera_matrix.csv"
+            if cam_csv.exists():
+                result.intrinsics = _load_camera_matrix_csv(cam_csv)
+            return
+
     # Directory: collect PLYs
     plys = sorted(p.rglob("*.ply"))
     if plys:
         result.ply_files = plys
 
-    # Look for ARKit-style RGB-D frames
+    # Look for legacy ARKit-style RGB-D frames (depth_*.tiff / rgb_*.png)
     depths = sorted(p.rglob("depth_*.tiff")) + sorted(p.rglob("depth_*.tif"))
     colors = sorted(p.rglob("rgb_*.png")) + sorted(p.rglob("rgb_*.jpg"))
     result.depth_frames = depths
@@ -105,7 +137,6 @@ def _parse_lidar(p: Path, result: ParsedInput) -> None:
             result.pose_file = pose_candidate
             break
 
-    # Intrinsics
     result.intrinsics = _load_intrinsics(p)
 
 
@@ -163,4 +194,17 @@ def _load_intrinsics(base: Path) -> dict | None:
                     return {"fx": K[0], "fy": K[1], "cx": K[2], "cy": K[3]}
             except Exception:
                 pass
+    return None
+
+
+def _load_camera_matrix_csv(cam_csv: Path) -> dict | None:
+    """Load intrinsics from ARKit camera_matrix.csv (3×3 K matrix, comma-separated)."""
+    try:
+        import numpy as np
+        K = np.loadtxt(str(cam_csv), delimiter=",")
+        if K.shape == (3, 3):
+            return {"fx": float(K[0, 0]), "fy": float(K[1, 1]),
+                    "cx": float(K[0, 2]), "cy": float(K[1, 2])}
+    except Exception:
+        pass
     return None
