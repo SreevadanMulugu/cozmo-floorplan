@@ -129,3 +129,15 @@ Full report: `benchmark/head_to_head_report.json`
 | Mirror/glass surfaces in depth | Medium | Confidence ≥1 filter removes low-quality depth pixels |
 | Multi-room drift (>3 rooms) | Medium | GTSAM pose graph active; single-room scans have zero drift |
 | Opening width gate (≤2cm on ≥85%) | Unknown | Gate cannot be verified without laser GT on openings |
+
+---
+
+## 9. All-Dataset Smoke Test
+
+| Dataset | Walls | Openings | Area (m²) | Ceiling (m) | Timing (ms) | Notes |
+|---|---|---|---|---|---|---|
+| `single_room` | 9 | 4 | 41.28 | 2.22 | 9,347 | Primary benchmark scene |
+| `single_scan_floor_only` | 4 | 0 | 1.14 | 3.13 | 16,990 | Floor-only: no ceiling → height uses Y-extent (known degraded mode) |
+| `single_scan_with_ceiling` | 11 | 4 | 94.92 | 2.40 | 22,171 | Different scan path covers larger area |
+
+All three datasets run without error. `single_scan_floor_only` degrades gracefully — without a ceiling RANSAC plane, ceiling height falls back to overall point cloud Y-extent, which is reported honestly. The pipeline does not crash or produce silent garbage.
