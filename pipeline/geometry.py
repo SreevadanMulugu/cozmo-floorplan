@@ -54,7 +54,7 @@ class RoomGeometry:
     room_center_2d: np.ndarray | None = None
 
 
-def extract_geometry(room_cloud: RoomCloud) -> RoomGeometry:
+def extract_geometry(room_cloud: RoomCloud, legacy_walls: bool = False) -> RoomGeometry:
     geo = RoomGeometry()
 
     # Ceiling height
@@ -68,12 +68,12 @@ def extract_geometry(room_cloud: RoomCloud) -> RoomGeometry:
 
     # Walls: derive from floor polygon edges (fully deterministic — same convex hull
     # vertices every run) rather than from RANSAC inlier extents (stochastic).
-    # Simplify the polygon first to remove sub-cm quantization jog edges.
-    if geo.floor_polygon_2d is not None and len(geo.floor_polygon_2d) >= 3:
+    # legacy_walls=True reverts to RANSAC-based extraction (stochastic; used for fix-loop before-run).
+    if not legacy_walls and geo.floor_polygon_2d is not None and len(geo.floor_polygon_2d) >= 3:
         simplified = _simplify_floor_polygon(geo.floor_polygon_2d)
         geo.walls = _walls_from_floor_polygon(simplified, room_cloud)
     else:
-        # Fallback for degenerate floor polygon
+        # Legacy / fallback: RANSAC inlier extents (non-deterministic between runs)
         for i, wall_plane in enumerate(room_cloud.walls):
             seg = _wall_plane_to_segment(wall_plane, room_cloud, wall_id=f"w{i+1}")
             if seg and seg.length_m >= MIN_WALL_LENGTH:

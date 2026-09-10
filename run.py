@@ -46,6 +46,8 @@ def main() -> int:
     parser.add_argument("--no-drift", action="store_true", help="Disable drift correction")
     parser.add_argument("--no-damage", action="store_true", help="Skip damage detection")
     parser.add_argument("--images", default=None, help="Images folder for damage detection")
+    parser.add_argument("--legacy-walls", action="store_true",
+                        help="Use RANSAC inlier extents for wall lengths (stochastic; for fix-loop before-run only)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -79,20 +81,20 @@ def main() -> int:
         from pipeline.reconstruction.lidar import reconstruct
         room_cloud = reconstruct(parsed)
         room_clouds = {"room_0": room_cloud}
-        room_geos = {"room_0": extract_geometry(room_cloud)}
+        room_geos = {"room_0": extract_geometry(room_cloud, legacy_walls=args.legacy_walls)}
 
     elif tier == "video":
         from pipeline.reconstruction.video import reconstruct
         room_cloud = reconstruct(parsed, output_dir=work_dir)
         room_clouds = {"room_0": room_cloud}
-        room_geos = {"room_0": extract_geometry(room_cloud)}
+        room_geos = {"room_0": extract_geometry(room_cloud, legacy_walls=args.legacy_walls)}
 
     elif tier == "photo":
         from pipeline.reconstruction.photo import reconstruct
         room_clouds = reconstruct(parsed, output_dir=work_dir)
         room_geos = {}
         for room_id, cloud in room_clouds.items():
-            room_geos[room_id] = extract_geometry(cloud)
+            room_geos[room_id] = extract_geometry(cloud, legacy_walls=args.legacy_walls)
 
     # --- Stitch ---
     use_drift = not args.no_drift

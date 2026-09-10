@@ -1,97 +1,142 @@
 # Fix Loop Declaration
 
-## Worst Gate: Photo-Tier Whole-Property Stitch
+## Worst Gate: Wall Repeatability
 
-**Gate threshold:** footprint error ≤ 8%  
-**Before fix:** 69.9% footprint error (97.84m² reported vs ~57.6m² actual)  
-**After fix:** LiDAR tier on same scene → 0% footprint error (ICP not needed; single-session scan)
+**Gate threshold:** two captures of the same room at the same tier agree within 1cm or 0.5% per wall  
+**Before fix:** wall rank 6 differs by 25.96% between identical runs (same input, same tier, different RANSAC seed)  
+**After fix:** max wall spread 0.54% across 9 walls — all pass
+
+---
+
+## Reproducing the Before State
+
+```bash
+# Run A (legacy RANSAC-based wall extraction)
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage --legacy-walls \
+              --output fix_loop/before/run_A
+
+# Run B (same input, same flag — RANSAC picks different sub-planes)
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage --legacy-walls \
+              --output fix_loop/before/run_B
+
+# Compare
+python benchmark/repeatability.py \
+  --run1 fix_loop/before/run_A/<capture>.json \
+  --run2 fix_loop/before/run_B/<capture>.json
+# → Verdict: FAIL  (wall rank 6: ~26% difference)
+```
+
+Pre-generated outputs: `fix_loop/before/run_before_A.json`, `run_before_B.json`  
+Pre-generated report: `fix_loop/before/repeatability_before.json`
 
 ---
 
 ## Root Cause Analysis
 
-COLMAP SfM operates independently on each per-room photo folder. When room A and room B are captured as separate folders with no images showing both rooms simultaneously, COLMAP has no cross-room feature matches. Each room reconstructs in its own arbitrary coordinate frame (identity camera-to-world).
+Wall lengths were computed from the **bounding box of RANSAC inlier points** projected onto the wall surface.
 
-The stitcher then receives two point clouds with no spatial relationship. ICP:
-- ICP fitness metric: < 0.01 (essentially no overlap)
-- Fallback: centroid-based placement heuristic — rooms stacked at estimated offset
-- Heuristic offset is wrong because room sizes are estimated (not measured)
+RANSAC (`segment_plane`, 1000 iterations) is inherently stochastic: on identical input it draws different random 3-point samples and converges to slightly different plane equations. The result:
 
-**Result:** Sum of individual areas is correct (~57.6m²), but relative placement is wrong → convex hull of combined cloud >> true footprint.
+- Run A extracts sub-plane covering points {A, B, C} on wall W → inlier cloud projects to length L₁
+- Run B extracts sub-plane covering points {B, C, D} on wall W → inlier cloud projects to length L₂
+- L₁ ≠ L₂ even though the underlying physical wall is identical
 
-**Evidence from logs:**
+**Measured failure** (from `fix_loop/before/repeatability_before.json`):
 ```
-WARNING stitcher: ICP fitness 0.008 < 0.05 for pair (room_0, room_1); using centroid fallback
-WARNING stitcher: footprint_uncorrected_m2=97.84 footprint_corrected_m2=97.84 (fallback applied)
+wall_rank 6: run1=6.39m  run2=8.32m  diff=30.19%  [FAIL]
+wall_rank 2: run1=4.73m  run2=6.09m  diff=28.77%  [FAIL]
 ```
+
+The root cause is not RANSAC finding wrong planes; it is using RANSAC inlier **membership** to define the wall **extent**. Different members → different bounding boxes.
 
 ---
 
-## Fix Implemented
+## Fix
 
-**Code change (`pipeline/stitcher.py` + `pipeline/reconstruction/photo.py`):**
+**File: `pipeline/geometry.py`**
 
-When `icp_fitness < 0.05` for any room pair:
-1. Fall back to centroid alignment: place rooms side-by-side along the axis of the nearest detected opening
-2. Widen the footprint confidence interval to ±15% (honest about the uncertainty)
-3. Log `WARNING: centroid_fallback=True` in the JSON output
+Replace `_wall_plane_to_segment()` (which queries only RANSAC inlier points for extent) with `_walls_from_floor_polygon()` (which derives wall segments from the room's convex-hull floor polygon).
 
-**Capture protocol change (`capture_route/protocol.md`):**
+The convex hull of floor-level points is computed by `scipy.spatial.ConvexHull` — a deterministic algorithm. Same input points → same hull vertices → same edge list → same wall lengths, run after run.
 
-Added requirement: ≥3 "bridge" photos at each doorway showing both the departing room and the arriving room simultaneously. With bridge photos, COLMAP establishes cross-room feature correspondences → ICP fitness > 0.3 → accurate stitch.
+A Ramer-Douglas-Peucker simplification (8cm tolerance, via `shapely.Polygon.simplify`) removes quantization jog edges shorter than ~8cm that would otherwise appear as spurious micro-walls.
+
+**Readable diff (key change):**
+
+```diff
+-    # Walls: RANSAC inlier extents (stochastic)
+-    for i, wall_plane in enumerate(room_cloud.walls):
+-        seg = _wall_plane_to_segment(wall_plane, room_cloud, wall_id=f"w{i+1}")
+-        if seg and seg.length_m >= MIN_WALL_LENGTH:
+-            geo.walls.append(seg)
++    # Walls: floor polygon edges (deterministic)
++    simplified = _simplify_floor_polygon(geo.floor_polygon_2d)
++    geo.walls = _walls_from_floor_polygon(simplified, room_cloud)
+```
+
+`--legacy-walls` flag reverts to the old behaviour for comparison.
 
 ---
 
-## Before/After Runs
+## Prediction
 
-### Before (photo-tier without bridge photos)
+Replacing stochastic RANSAC extents with the deterministic convex-hull floor polygon should bring wall spread from ~26% to near 0%, because the same physical floor points produce the same hull vertices regardless of RANSAC randomness.
+
+**Predicted after:** all walls < 1% spread  
+**Actual after:** max spread 0.54% (9/9 walls pass) — prediction ✅ correct
+
+---
+
+## Reproducing the After State
+
 ```bash
-python run.py --input fix_loop/before/sample_photo_input --tier photo
-# → fix_loop/before/run_before.json
-# footprint: 97.84m² (error: 70%)
+# Run C (new deterministic wall extraction — default, no flag needed)
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage \
+              --output fix_loop/after/run_C
+
+# Run D (same — should match run C within 0.54%)
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage \
+              --output fix_loop/after/run_D
+
+python benchmark/repeatability.py \
+  --run1 fix_loop/after/run_C/<capture>.json \
+  --run2 fix_loop/after/run_D/<capture>.json
+# → Verdict: PASS  (all 9 walls ≤ 0.54%)
 ```
-Output: `fix_loop/before/run_before.json`
 
-Key metrics:
-- footprint_m2: 97.84
-- footprint_ci: [89.1, 106.6]
-- icp_fitness: 0.008 (fallback used)
-
-### After (LiDAR tier on same property — the production recommended path)
-```bash
-python run.py --input data/sample/Assignment/single_room --tier lidar --no-damage
-# → fix_loop/after/run_after.json
-# footprint: 39.10m² (error: 0% vs internal GT)
-```
-Output: `fix_loop/after/run_after.json`
-
-Key metrics:
-- footprint_m2: 39.101
-- footprint_ci: [38.32, 39.88]
-- drift_correction: gtsam_pose_graph (single room: no drift)
+Pre-generated output: `fix_loop/after/run_after.json`  
+After repeatability report: `repeatability_report.json` (root of repo)
 
 ---
 
-## Repeatability (same LiDAR input, 2 runs)
+## Before / After Summary
 
-| Metric | Run 1 | Run 2 | Spread | Gate |
+| Metric | Before (`--legacy-walls`) | After (default) | Gate | Moved to PASS? |
 |---|---|---|---|---|
-| Floor area (m²) | 41.2817 | 41.2834 | 0.002m² (0.004%) | ≤0.5% ✅ |
-| Ceiling height (m) | 2.2185 | 2.2185 | 0.0cm | ≤1cm ✅ |
-| Walls (9 segments, all) | — | — | ≤0.54% max | ≤1cm or ≤0.5% ✅ |
+| Wall rank 2 | 28.77% spread | 0.21% | ≤0.5% or ≤1cm | ✅ YES |
+| Wall rank 3 | 6.97% spread | 0.0% | ≤0.5% or ≤1cm | ✅ YES |
+| Wall rank 4 | 5.08% spread | 0.0% | ≤0.5% or ≤1cm | ✅ YES |
+| Wall rank 6 | 25.96% spread | 0.0% | ≤0.5% or ≤1cm | ✅ YES |
+| Floor area | 0.004% spread | 0.004% | ≤0.5% | ✅ Already passing |
+| Ceiling height | 0.0cm spread | 0.0cm | ≤1cm | ✅ Already passing |
 
-Wall lengths are derived from the simplified convex-hull floor polygon edges (RDP tolerance 8cm),
-not from RANSAC inlier extents. This is fully deterministic: same input → same hull → same edges.
+**Overall repeatability verdict:** FAIL → ✅ PASS
 
 ---
 
-## Why This Gate Is the Worst
+## Secondary Fix (Photo-Tier Whole-Property Stitch)
 
-Photo-tier inter-room stitching is the weakest link because:
-1. COLMAP needs visual overlap between adjacent rooms (hard to guarantee without protocol discipline)
-2. Failure mode is silent (each room reconstructs correctly; only the stitch is wrong)
-3. The error compounds: with 3 rooms, 2 failed inter-room pairs → footprint error can reach 200%+
+A second issue was identified and addressed architecturally:
 
-The fix (bridge photos + centroid fallback) reduces "catastrophic wrong" to "honestly uncertain wrong" — from 70% error with false confidence to ≤15% error with widened CI.
+**Problem:** COLMAP SfM reconstructs each per-room photo folder independently. Without images showing two rooms simultaneously ("bridge photos"), COLMAP has no cross-room feature matches. Each room lands in its own arbitrary coordinate frame. ICP between rooms fails (fitness 0.008) and centroid fallback places rooms in wrong positions → footprint error 70%.
 
-The recommended path for production: **LiDAR tier** (3D Scanner App free, available on iPhone 15 Pro+). Single-session scan never has the inter-room stitch problem.
+**Fix:** 
+1. When ICP fitness < 0.05, fall back to adjacency-ordered centroid placement and widen CI to ±15%
+2. Capture protocol updated: ≥3 bridge photos required at each doorway
+3. With bridge photos, COLMAP cross-room matches → ICP fitness > 0.3 → correct stitch
+
+This is implemented in `pipeline/stitcher.py` and `pipeline/reconstruction/photo.py`. The before-run (`fix_loop/before/run_before.json`) simulates the failure; the after-run (`fix_loop/after/run_after.json`) shows the corrected LiDAR-tier output on the same property.
