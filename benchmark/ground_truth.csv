@@ -1,0 +1,8 @@
+type,id,value_m,notes
+wall,w1,4.000,north_wall
+wall,w2,4.000,south_wall
+wall,w3,5.000,east_wall
+wall,w4,5.000,west_wall
+ceiling,room_0,2.700,
+area,room_0,20.000,
+footprint,,20.000,
