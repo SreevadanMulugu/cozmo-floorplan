@@ -47,8 +47,19 @@ def reconstruct(parsed: ParsedInput, output_dir: Path | None = None) -> RoomClou
     frame_paths = sorted(frames_dir.glob("*.jpg"))
     log.info(f"Total frames: {len(frame_paths)}")
 
-    # 1. Camera poses via COLMAP
-    poses, intrinsic = _estimate_poses_colmap(frames_dir, work_dir, frame_paths)
+    # 1. Camera poses
+    # If the video file is inside an ARKit capture directory (has odometry.csv),
+    # use the ARKit poses directly instead of running COLMAP on compressed RGB.
+    arkit_dir = None
+    if parsed.video_file:
+        parent = parsed.video_file.parent
+        if (parent / "odometry.csv").exists():
+            arkit_dir = parent
+    if arkit_dir:
+        log.info("ARKit poses found — using odometry.csv instead of COLMAP")
+        poses, intrinsic = _arkit_poses(arkit_dir, frame_paths)
+    else:
+        poses, intrinsic = _estimate_poses_colmap(frames_dir, work_dir, frame_paths)
 
     # 2. Metric depth per frame via Depth Anything V2
     depth_dir = work_dir / "depths"
@@ -110,6 +121,70 @@ def _extract_frames(video_path: Path, work_dir: Path) -> Path:
     return frames_dir
 
 
+def _arkit_poses(
+    arkit_dir: Path,
+    frame_paths: list[Path],
+) -> tuple[dict[str, np.ndarray], o3d.camera.PinholeCameraIntrinsic]:
+    """Load poses from ARKit odometry.csv. Returns poses keyed by extracted frame filename."""
+    import csv as csv_mod
+
+    # Read odometry CSV: columns qx,qy,qz,qw,x,y,z,fx,fy,cx,cy (per-frame)
+    odom_rows = []
+    with open(arkit_dir / "odometry.csv") as f:
+        reader = csv_mod.DictReader(f)
+        for row in reader:
+            odom_rows.append(row)
+
+    if not odom_rows:
+        log.warning("Empty odometry.csv; falling back to identity poses")
+        return _identity_poses(frame_paths), _default_intrinsic(arkit_dir)
+
+    # Sample the same frame indices that cv2 extracted (frame_paths are in order)
+    total_frames = len(odom_rows)
+    n_extracted = len(frame_paths)
+    # Uniformly distribute extracted frames across odometry rows
+    indices = np.linspace(0, total_frames - 1, n_extracted, dtype=int)
+
+    # Intrinsics from first row
+    row0 = odom_rows[0]
+    try:
+        fx = float(row0["fx"]); fy = float(row0["fy"])
+        cx = float(row0["cx"]); cy = float(row0["cy"])
+    except (KeyError, ValueError):
+        fx = fy = 1440.0; cx = cy = 960.0
+    intrinsic = o3d.camera.PinholeCameraIntrinsic(1920, 1440, fx, fy, cx, cy)
+
+    poses: dict[str, np.ndarray] = {}
+    for fp, idx in zip(frame_paths, indices):
+        row = odom_rows[int(idx)]
+        try:
+            qx, qy, qz, qw = float(row["qx"]), float(row["qy"]), float(row["qz"]), float(row["qw"])
+            tx, ty, tz = float(row["x"]), float(row["y"]), float(row["z"])
+        except (KeyError, ValueError):
+            T_wc = np.eye(4)
+            poses[fp.name] = T_wc
+            continue
+        # Quaternion → rotation matrix
+        R = _quat_to_mat(qx, qy, qz, qw)
+        T_wc = np.eye(4)
+        T_wc[:3, :3] = R
+        T_wc[:3, 3] = [tx, ty, tz]
+        poses[fp.name] = T_wc
+
+    log.info(f"ARKit poses: {len(poses)} frames mapped from {total_frames} odometry entries")
+    return poses, intrinsic
+
+
+def _quat_to_mat(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
+    """Quaternion → 3×3 rotation matrix."""
+    x, y, z, w = qx, qy, qz, qw
+    return np.array([
+        [1 - 2*(y*y + z*z),   2*(x*y - z*w),   2*(x*z + y*w)],
+        [  2*(x*y + z*w), 1 - 2*(x*x + z*z),   2*(y*z - x*w)],
+        [  2*(x*z - y*w),   2*(y*z + x*w), 1 - 2*(x*x + y*y)],
+    ])
+
+
 def _estimate_poses_colmap(
     frames_dir: Path,
     work_dir: Path,
@@ -142,7 +217,11 @@ def _estimate_poses_colmap(
     reconstruction = maps[0]
 
     # Extract camera intrinsics
-    cam = list(reconstruction.cameras.values())[0]
+    cameras = list(reconstruction.cameras.values())
+    if not cameras:
+        log.warning("COLMAP reconstruction has no cameras; using identity poses")
+        return _identity_poses(frame_paths), _default_intrinsic(frames_dir)
+    cam = cameras[0]
     if hasattr(cam, "focal_length"):
         fx = fy = cam.focal_length
         cx = cam.principal_point_x
@@ -157,13 +236,17 @@ def _estimate_poses_colmap(
     intrinsic = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
 
     # Build pose dict: image_name → camera-to-world 4×4
-    # pycolmap 3.13: cam_from_world is Rigid3d with .rotation (Rotation3d) and .translation
+    # pycolmap 3.13: cam_from_world() is a method returning Rigid3d
     poses: dict[str, np.ndarray] = {}
     for img_id, image in reconstruction.images.items():
         if not image.has_pose:
             continue
-        R = image.cam_from_world.rotation.matrix()   # 3×3 rotation (world→cam)
-        t = image.cam_from_world.translation          # 3-vec
+        try:
+            cfw = image.cam_from_world()
+            R = cfw.rotation.matrix()
+            t = cfw.translation
+        except Exception:
+            continue
         # Convert world-to-camera to camera-to-world
         T_wc = np.eye(4)
         T_wc[:3, :3] = R.T
@@ -171,6 +254,10 @@ def _estimate_poses_colmap(
         poses[image.name] = T_wc
 
     log.info(f"COLMAP registered {len(poses)} images")
+    # If reconstruction is too sparse (<5 images), fall back to identity
+    if len(poses) < 5:
+        log.warning(f"COLMAP registered only {len(poses)} images; falling back to identity poses")
+        return _identity_poses(frame_paths), intrinsic
     return poses, intrinsic
 
 

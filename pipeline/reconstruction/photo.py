@@ -176,8 +176,12 @@ def _estimate_poses(
         for img_id, image in reconstruction.images.items():
             if not image.has_pose:
                 continue
-            R = image.cam_from_world.rotation.matrix()
-            t = image.cam_from_world.translation
+            try:
+                cfw = image.cam_from_world()
+                R = cfw.rotation.matrix()
+                t = cfw.translation
+            except Exception:
+                continue
             T_wc = np.eye(4)
             T_wc[:3, :3] = R.T
             T_wc[:3, 3] = -R.T @ t
