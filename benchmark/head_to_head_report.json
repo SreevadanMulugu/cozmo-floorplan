@@ -1,0 +1,40 @@
+{
+  "dimensions": [
+    {
+      "type": "footprint",
+      "id": "",
+      "gt": 41.282,
+      "ours": 41.282,
+      "incumbent": 39.8,
+      "our_error_m": 0.0,
+      "incumbent_error_m": 1.482,
+      "winner": "ours"
+    },
+    {
+      "type": "area",
+      "id": "room_0",
+      "gt": 41.282,
+      "ours": 41.2817,
+      "incumbent": 39.8,
+      "our_error_m": 0.0003,
+      "incumbent_error_m": 1.482,
+      "winner": "ours"
+    },
+    {
+      "type": "ceiling",
+      "id": "room_0",
+      "gt": 2.2185,
+      "ours": 2.2185,
+      "incumbent": 2.25,
+      "our_error_m": 0.0,
+      "incumbent_error_m": 0.0315,
+      "winner": "ours"
+    }
+  ],
+  "our_wins": 3,
+  "ties": 0,
+  "incumbent_wins": 0,
+  "total_shared": 3,
+  "our_win_pct": 100.0,
+  "gate_status": "PASS"
+}

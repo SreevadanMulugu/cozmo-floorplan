@@ -1,0 +1,4 @@
+type,id,value_m,notes
+ceiling,room_0,2.2185,laser_measure_on_sample_room
+area,room_0,41.282,laser_measure_on_sample_room
+footprint,,41.282,laser_measure_on_sample_room
