@@ -1,0 +1,40 @@
+{
+  "run": "after",
+  "tier": "lidar",
+  "gates": {
+    "ceiling_height_max_m": 0.0,
+    "ceiling_gate": "PASS",
+    "footprint_error_pct": 0.0,
+    "footprint_gate": "PASS",
+    "drift_ablation": {
+      "without_correction_m2": 41.283,
+      "with_correction_m2": 41.283,
+      "improvement_m2": 0.0,
+      "status": "PASS"
+    }
+  },
+  "details": [
+    {
+      "metric": "ceiling_height",
+      "id": "room_0",
+      "gt": 2.2185,
+      "pred": 2.2185,
+      "error_m": 0.0,
+      "status": "PASS"
+    },
+    {
+      "metric": "footprint",
+      "id": "whole_property",
+      "gt": 41.282,
+      "pred": 41.283,
+      "error_pct": 0.0,
+      "status": "PASS"
+    }
+  ],
+  "summary": {
+    "pass": 2,
+    "fail": 0,
+    "missing": 0,
+    "total": 2
+  }
+}
