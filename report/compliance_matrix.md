@@ -62,7 +62,7 @@
 | Fix loop story | Section 5 | ✅ |
 | Known failure modes | Section 6 | ✅ |
 | **Process evidence** | | |
-| Incremental commit history | 4 commits: initial → benchmark → repeatability fix → reports | ✅ |
+| Incremental commit history | 8 commits: initial → benchmark → repeatability → reports → fix loop → video tier ffmpeg fallback | ✅ |
 | AI tools disclosed | README.md Toolchain section | ✅ |
 | **Constraints** | | |
 | Handheld consumer capture only | ARKit RGBD via 3D Scanner App | ✅ |

@@ -86,23 +86,37 @@ python benchmark/head_to_head.py \
 
 ## Fix Loop
 
+The declared fix is **wall repeatability**: RANSAC inlier extents were stochastic between runs.
+Now wall lengths derive from the deterministic convex-hull floor polygon.
+
 ```bash
-# Reproduce before-fix results
-git checkout <BEFORE_SHA>
-python run.py --input data/sample/photo --tier photo --capture-id before_fix --output fix_loop/before
+# Reproduce BEFORE state (stochastic RANSAC extents — use --legacy-walls flag)
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage --legacy-walls \
+              --output fix_loop/before/run_A
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage --legacy-walls \
+              --output fix_loop/before/run_B
+python benchmark/repeatability.py \
+    --run1 fix_loop/before/run_A/*.json \
+    --run2 fix_loop/before/run_B/*.json
+# → Verdict: FAIL  (wall rank 6: ~26% spread)
 
-# Reproduce after-fix results
-git checkout main
-python run.py --input data/sample/photo --tier photo --capture-id after_fix --output fix_loop/after
-
-# Evaluate both
-python benchmark/evaluate.py --output fix_loop/before/before_fix.json \
-    --ground-truth benchmark/ground_truth.csv --run before
-python benchmark/evaluate.py --output fix_loop/after/after_fix.json \
-    --ground-truth benchmark/ground_truth.csv --run after
+# Reproduce AFTER state (deterministic convex-hull edges — default)
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage \
+              --output fix_loop/after/run_C
+python run.py --input data/sample/Assignment/single_room \
+              --tier lidar --no-damage \
+              --output fix_loop/after/run_D
+python benchmark/repeatability.py \
+    --run1 fix_loop/after/run_C/*.json \
+    --run2 fix_loop/after/run_D/*.json
+# → Verdict: PASS  (all 9 walls ≤ 0.54%)
 ```
 
-See `fix_loop/declaration.md` for root cause analysis and prediction.
+Pre-generated artifacts: `fix_loop/before/run_before_A.json`, `run_before_B.json`, `repeatability_before.json`.  
+See `fix_loop/declaration.md` for full root cause analysis and prediction.
 
 ---
 

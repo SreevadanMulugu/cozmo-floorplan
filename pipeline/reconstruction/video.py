@@ -69,17 +69,44 @@ def reconstruct(parsed: ParsedInput, output_dir: Path | None = None) -> RoomClou
 def _extract_frames(video_path: Path, work_dir: Path) -> Path:
     frames_dir = work_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
-    cmd = [
-        "ffmpeg", "-i", str(video_path),
-        "-vf", "fps=3",            # 3 fps — enough for room-scale reconstruction
-        "-q:v", "2",
-        str(frames_dir / "%06d.jpg"),
-        "-y", "-loglevel", "error"
-    ]
-    log.info("Extracting frames from video...")
-    subprocess.run(cmd, check=True)
-    extracted = list(frames_dir.glob("*.jpg"))
-    log.info(f"Extracted {len(extracted)} frames")
+
+    # Try ffmpeg first; fall back to cv2 (always available when OpenCV is installed)
+    import shutil
+    if shutil.which("ffmpeg"):
+        cmd = [
+            "ffmpeg", "-i", str(video_path),
+            "-vf", "fps=3",
+            "-q:v", "2",
+            str(frames_dir / "%06d.jpg"),
+            "-y", "-loglevel", "error"
+        ]
+        log.info("Extracting frames from video (ffmpeg)...")
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode == 0:
+            extracted = list(frames_dir.glob("*.jpg"))
+            log.info(f"Extracted {len(extracted)} frames via ffmpeg")
+            return frames_dir
+        log.warning("ffmpeg failed; falling back to cv2")
+
+    # cv2 fallback: sample at ~3 fps
+    import cv2
+    log.info("Extracting frames from video (cv2 fallback)...")
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    stride = max(1, int(fps / 3))
+    idx = 0
+    saved = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if idx % stride == 0:
+            out_path = frames_dir / f"{saved:06d}.jpg"
+            cv2.imwrite(str(out_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            saved += 1
+        idx += 1
+    cap.release()
+    log.info(f"Extracted {saved} frames via cv2")
     return frames_dir
 
 
@@ -130,11 +157,14 @@ def _estimate_poses_colmap(
     intrinsic = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
 
     # Build pose dict: image_name → camera-to-world 4×4
+    # pycolmap 3.13: cam_from_world is Rigid3d with .rotation (Rotation3d) and .translation
     poses: dict[str, np.ndarray] = {}
     for img_id, image in reconstruction.images.items():
-        R = image.rotation_matrix()
-        t = image.tvec
-        # COLMAP: world-to-camera transform
+        if not image.has_pose:
+            continue
+        R = image.cam_from_world.rotation.matrix()   # 3×3 rotation (world→cam)
+        t = image.cam_from_world.translation          # 3-vec
+        # Convert world-to-camera to camera-to-world
         T_wc = np.eye(4)
         T_wc[:3, :3] = R.T
         T_wc[:3, 3] = -R.T @ t

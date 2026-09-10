@@ -174,8 +174,10 @@ def _estimate_poses(
 
         poses: dict[str, np.ndarray] = {}
         for img_id, image in reconstruction.images.items():
-            R = image.rotation_matrix()
-            t = image.tvec
+            if not image.has_pose:
+                continue
+            R = image.cam_from_world.rotation.matrix()
+            t = image.cam_from_world.translation
             T_wc = np.eye(4)
             T_wc[:3, :3] = R.T
             T_wc[:3, 3] = -R.T @ t

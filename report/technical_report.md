@@ -66,7 +66,7 @@ Intervals are calibrated from published benchmarks, not claimed from test data.
 - Wall extraction: PCA on inlier points projects to 2D (X-Z), fits principal axis, extracts endpoints
 
 ### Video Tier
-- **ffmpeg** extracts frames at 3 fps from walkthrough video
+- **cv2** (OpenCV) extracts frames at 3 fps from walkthrough video (ffmpeg used when available; cv2 fallback when not installed)
 - **COLMAP** (pycolmap) estimates camera poses from consecutive frames
 - **Depth Anything V2 (ViT-L, metric indoor)** provides per-frame metric depth
 - **Open3D ScalableTSDFVolume** (2 cm voxel) integrates RGB-D frames
