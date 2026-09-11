@@ -12,7 +12,8 @@ Three input tiers: LiDAR · Video · Photos. One command per capture. JSON + SVG
 # 1. Clone and install
 git clone <this-repo>
 cd cozmo-floorplan
-pip install open3d gtsam ultralytics ezdxf shapely svgwrite pycolmap scipy Pillow torch torchvision
+pip install -r requirements.txt
+pip install gtsam   # platform-specific wheel; or: conda install -c conda-forge gtsam
 
 # 2. Download model weights
 chmod +x models/download_models.sh

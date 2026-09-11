@@ -1,0 +1,30 @@
+# Core 3D / geometry
+open3d>=0.18.0
+scipy>=1.13.0
+numpy>=1.26.0
+shapely>=2.0.0
+
+# Camera pose estimation
+pycolmap>=3.0.0
+
+# Deep learning (depth + damage)
+torch>=2.0.0
+torchvision>=0.15.0
+timm>=1.0.0          # required by ZoeDepth
+ultralytics>=8.0.0   # YOLOv8
+
+# Computer vision utilities
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Floor plan rendering
+svgwrite>=1.4.0
+ezdxf>=1.0.0
+
+# Multi-room drift correction
+# pip install gtsam   (install separately — wheel name varies by platform)
+
+# Data utilities
+tqdm>=4.65.0
+pandas>=2.0.0
+matplotlib>=3.7.0

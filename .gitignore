@@ -4,7 +4,5 @@ __pycache__/
 .DS_Store
 models/depth_anything_v2/*.pth
 models/yolov8/*.pt
-fix_loop/before/
-fix_loop/after/
-models/yolov8/*.pt
-models/depth_anything_v2/*.pth
+data/sample/
+_photo_work/
